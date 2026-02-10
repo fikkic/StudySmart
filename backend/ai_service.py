@@ -8,21 +8,43 @@ load_dotenv()
 
 class GigaService:
     def __init__(self):
-        # Отключаем проверку сертификатов для удобства локальной разработки
-        self.giga = GigaChat(credentials=os.getenv("GIGACHAT_CREDENTIALS"), verify_ssl_certs=False)
+        self.giga = GigaChat(credentials=os.getenv("GIGACHAT_CREDENTIALS"), verify_ssl_certs=False, scope="GIGACHAT_API_PERS")
 
-    def generate_cards(self, text: str):
-        prompt = f"""Ты — помощник в обучении. Проанализируй текст и выдели главные факты. 
-        Создай на их основе карточки "Вопрос-Ответ". 
-        Верни ТОЛЬКО JSON-массив объектов с полями "q" и "a".
-        Пример: [{"q": "2+2?", "a": "4"}]
-        Текст для анализа: {text[:3000]}"""
-        
-        res = self.giga.chat(prompt)
-        content = res.choices[0].message.content
-        
-        # Очистка ответа от лишнего текста, если GigaChat его добавит
-        match = re.search(r'\[.*\]', content, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-        return []
+    def generate_cards(self, text: str, difficulty: str):
+        # Оптимизируем количество, чтобы избежать обрыва текста
+        settings = {
+            "easy": {"count": "5", "style": "базовые понятия"},
+            "medium": {"count": "7", "style": "детали и логику"},
+            "hard": {"count": "10", "style": "глубокий анализ"}
+        }
+        conf = settings.get(difficulty, settings["easy"])
+
+        try:
+            # Сжимаем промпт до минимума
+            prompt = f"""Составь тест ({difficulty}) по тексту. Нужно {conf['count']} вопросов. 
+            Верни ТОЛЬКО JSON массив объектов: [{{"question":"текст","options":["а","б","в","г"],"correct":"правильный_текст"}}]
+            Текст: {text[:2500]}"""
+            
+            res = self.giga.chat(prompt)
+            content = res.choices[0].message.content
+            
+            # Очистка от лишнего мусора
+            content = content.replace("```json", "").replace("```", "").strip()
+            
+            # Если ответ оборвался, пытаемся его "закрыть" вручную
+            if not content.endswith("]"):
+                last_brace = content.rfind("}")
+                if last_brace != -1:
+                    content = content[:last_brace+1] + "]"
+            
+            # Ищем границы массива
+            start = content.find("[")
+            end = content.rfind("]") + 1
+            if start != -1 and end > start:
+                return json.loads(content[start:end])
+            
+            return None
+        except Exception as e:
+            print(f"Ошибка парсинга JSON: {e}")
+            print(f"Текст от ИИ был: {content[:100]}...") # Печатаем начало для отладки
+            return None

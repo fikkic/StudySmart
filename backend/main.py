@@ -29,25 +29,43 @@ def get_db():
         database.close()
 
 @app.post("/generate")
-async def generate(text: str = Form(...), title: str = Form("Новая колода"), d: Session = Depends(get_db)):
-    cards_data = giga.generate_cards(text)
+async def generate(text: str = Form(...), title: str = Form(...), difficulty: str = Form("easy"), d: Session = Depends(get_db)):
+    cards_data = giga.generate_cards(text, difficulty)
     if not cards_data:
         raise HTTPException(status_code=500, detail="Ошибка генерации ИИ")
     
-    new_deck = models.Deck(title=title)
+    # Убедитесь, что здесь передается difficulty
+    new_deck = models.Deck(title=title, difficulty=difficulty)
     d.add(new_deck)
     d.commit()
     d.refresh(new_deck)
     
     for item in cards_data:
-        card = models.Card(deck_id=new_deck.id, question=item['q'], answer=item['a'])
+        card = models.Card(
+            deck_id=new_deck.id, 
+            question=item.get('question'), # Проверь, что тут question, а не q
+            options=item.get('options'), 
+            correct=item.get('correct')
+        )
         d.add(card)
-    
     d.commit()
-    return {"deck_id": new_deck.id, "cards": cards_data}
+    return {"status": "ok"}
+
+@app.post("/cards/{card_id}/review")
+async def review_card(card_id: int, known: bool, d: Session = Depends(get_db)):
+    card = d.query(models.Card).filter(models.Card.id == card_id).first()
+    deck = d.query(models.Deck).filter(models.Deck.id == card.deck_id).first()
+    
+    if known:
+        deck.correct_answers += 1
+    else:
+        deck.wrong_answers += 1
+    d.commit()
+    return {"status": "updated"}
 
 @app.get("/decks")
 async def get_decks(d: Session = Depends(get_db)):
+    # Теперь это сработает, так как в новой базе колонка difficulty появится
     return d.query(models.Deck).all()
 
 @app.get("/decks/{deck_id}")
