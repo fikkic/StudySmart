@@ -5,3 +5,5 @@ sqlalchemy
 pydantic
 python-dotenv
 pymupdf
+python-multipart
+bcrypt==4.0.1
