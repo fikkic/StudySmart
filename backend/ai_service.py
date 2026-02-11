@@ -15,60 +15,67 @@ class GigaService:
         )
 
     def generate_cards(self, text: str, difficulty: str):
-        # Устанавливаем количество вопросов согласно твоим требованиям
+        # 1. Снижаем лимиты для стабильности
         settings = {
-            "easy": {"count": "6", "style": "базовые понятия и термины"},
-            "medium": {"count": "11", "style": "детали, логические связи и определения"},
-            "hard": {"count": "18", "style": "глубокий анализ, сложные нюансы и синтез знаний"}
+            "easy": {"count": "5", "style": "базовые факты"},
+            "medium": {"count": "8", "style": "термины и логику"},
+            "hard": {"count": "15", "style": "глубокий анализ"} 
         }
         conf = settings.get(difficulty, settings["easy"])
 
         try:
-            # Максимально сжатый промпт для экономии места
+            # 2. Промпт с жестким ограничением
             prompt = f"""Ты — генератор тестов. Тема: {difficulty}. Нужно ровно {conf['count']} вопросов. 
-            Стиль: {conf['style']}.
             Ответ СТРОГО JSON массивом:
-            [{{"q":"вопрос","o":["вариант1","вариант2","вариант3","вариант4"],"c":"вариант1"}}]
-            Важно: только JSON, без вступлений. В "c" пиши ПОЛНЫЙ ТЕКСТ ответа.
+            [{{"q":"вопрос","o":["а","б","в","г"],"c":"а"}}]
+            Важно: только JSON. В "c" пиши ПОЛНЫЙ ТЕКСТ правильного ответа.
             Текст для анализа: {text[:2500]}"""
             
             res = self.giga.chat(prompt)
             content = res.choices[0].message.content
             
-            # Очистка от лишнего (markdown и пробелы)
+            # 3. Очистка
             content = content.replace("```json", "").replace("```", "").strip()
             
-            # Поиск начала массива
             start = content.find("[")
-            if start == -1: return None
-            content = content[start:]
+            if start == -1: return []
+            
+            # Предварительная обрезка до возможного конца
+            # Если есть явный конец ], берем до него
+            end = content.rfind("]")
+            if end != -1:
+                json_str = content[start:end+1]
+            else:
+                json_str = content[start:]
 
-            # РЕМОНТ JSON: Если текст оборвался на Хардкоре
-            if not content.endswith("]"):
-                last_brace = content.rfind("}")
-                if last_brace != -1:
-                    content = content[:last_brace+1] + "]"
+            # 4. Попытка парсинга с авто-ремонтом
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                print("⚠️ JSON оборван, пытаюсь восстановить...")
+                # Ищем последний "}," — это конец последнего успешного вопроса
+                last_comma_brace = json_str.rfind("},")
+                if last_comma_brace != -1:
+                    # Отрезаем всё после последнего целого вопроса и закрываем массив
+                    json_str = json_str[:last_comma_brace+1] + "]"
+                    data = json.loads(json_str)
+                else:
+                    # Если совсем всё плохо
+                    return []
+
+            # 5. Преобразование ключей обратно в длинные
+            formatted_data = []
+            for item in data:
+                # Проверка на целостность данных внутри вопроса
+                if "q" in item and "o" in item and "c" in item:
+                    formatted_data.append({
+                        "question": item.get("q"),
+                        "options": item.get("o"),
+                        "correct": item.get("c")
+                    })
             
-            end = content.rfind("]") + 1
-            json_str = content[:end]
-            
-            # Финальный парсинг
-            data = json.loads(json_str)
-            
-            # Форматируем для базы данных (переименовываем короткие ключи назад)
-            return [
-                {
-                    "question": item.get("q"),
-                    "options": item.get("o"),
-                    "correct": item.get("c")
-                } for item in data
-            ]
+            return formatted_data
 
         except Exception as e:
-            print(f"Ошибка парсинга ({difficulty}): {e}")
-            # Если всё же упало, пробуем выдать хотя бы часть (для надежности)
-            try:
-                # Попытка вытащить хоть что-то регуляркой при катастрофическом сбое
-                return [] 
-            except:
-                return None
+            print(f"CRITICAL ERROR ({difficulty}): {e}")
+            return []
